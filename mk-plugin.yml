@@ -1,2 +1,7 @@
 name: nowplaying
 apiVersion: 1
+
+# この鯖では動かさないので組み込まない (ローカルの都合。**commit しないこと**)。
+# 設定の `enabled: false` と違い、バイナリにもフロントエンドにも入らないので、
+# 設定画面に項目が残って「保存すると 404」になることがない。
+disabled: true
