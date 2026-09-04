@@ -353,7 +353,7 @@ func TestJobs_SweepsOldRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO remote_pending (id, host, username, created_at)
+		INSERT INTO peer_cache_pending (id, host, key, created_at)
 		VALUES ('old', 'other.example', 'alice', now() - interval '3 days')
 	`); err != nil {
 		t.Fatal(err)
@@ -369,7 +369,7 @@ func TestJobs_SweepsOldRows(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM snapshots`).Scan(&snaps); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM remote_pending`).Scan(&pendings); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM peer_cache_pending`).Scan(&pendings); err != nil {
 		t.Fatal(err)
 	}
 	if snaps != 0 {

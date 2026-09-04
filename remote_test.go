@@ -148,6 +148,8 @@ func peerHarness(t *testing.T, api plugin.API) (*plugintest.Harness, plugintest.
 		WithAPI(api).
 		WithPeers("other.example").
 		WithConfig(testConfig(srv.URL, ""))
+	// **Peer の登録は Definition.Peer 経由 (mk-go #2819 / #2820)。**
+	h.Peer(Plugin)
 	return h, h.Routes(Plugin)
 }
 

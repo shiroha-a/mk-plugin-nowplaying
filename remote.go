@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shiroha-a/mk/plugin"
+	"github.com/shiroha-a/mk/plugin/peercache"
 )
 
 /*
@@ -19,30 +20,52 @@ import (
  * なので、初めて開いたときは出ない。
  */
 
-// remoteTTL is how long a fetched remote profile is reused.
-//
-// 相手も 30 秒キャッシュを持っているので、それより短く聞いても新しくならない。
-// 再生中は変わるが、**相手に負荷をかけない**方を優先する。
-const remoteTTL = 2 * time.Minute
-
-// remoteNegativeTTL is how long "that user has not linked anything" is kept.
-const remoteNegativeTTL = 10 * time.Minute
-
 // peerRequest is what we ask another instance.
 //
-// **username だけを送る。** 誰が見に来たかは送らない。
+// **username だけを送る。** 誰が見に来たかは送らない (相手に渡す必要が無い)。
 type peerRequest struct {
 	Username string `json:"username"`
 }
 
+// peerResponse is what the other instance answers.
 type peerResponse struct {
 	Linked  bool            `json:"linked"`
 	Profile json.RawMessage `json:"profile,omitempty"`
 }
 
+// remoteTTL / remoteNegativeTTL は peercache に渡す寿命。
+//
+// 再生中は数分で変わるので肯定側は短い。否定側 (相手が連携していない) は、
+// そのたびに問い合わせないよう長めにする。
+const (
+	remoteTTL         = 2 * time.Minute
+	remoteNegativeTTL = 10 * time.Minute
+)
+
+// newRemoteCache builds the view-time cache shared by the peer callback and
+// the profile route.
+//
+// **型は plugin/peercache が持つ (#2820)。** 非同期取り寄せ + TTL + 空振りの
+// 記憶 + 初回は空、という形は 3 プラグインに手で書かれていた。
+func newRemoteCache(ctx plugin.Context, db *sql.DB) (*peercache.Cache, error) {
+	return peercache.New(peercache.Options{
+		Context:     ctx,
+		DB:          db,
+		Request:     func(key string) any { return peerRequest{Username: key} },
+		TTL:         remoteTTL,
+		NegativeTTL: remoteNegativeTTL,
+	})
+}
+
 // registerPeer wires both directions of the plugin channel.
-func registerPeer(ctx plugin.Context, db *sql.DB, cl *client) {
-	peer := ctx.Peer()
+//
+// **Definition.Peer から呼ぶ (#2819)。** Routes の中で登録すると、ロールを
+// 分割した構成で応答が届かない。
+func registerPeer(ctx plugin.Context, peer plugin.Peer, db *sql.DB, cl *client) error {
+	cache, err := newRemoteCache(ctx, db)
+	if err != nil {
+		return err
+	}
 
 	peer.Handle(func(c context.Context, from string, payload json.RawMessage) (any, error) {
 		var req peerRequest
@@ -75,22 +98,14 @@ func registerPeer(ctx plugin.Context, db *sql.DB, cl *client) {
 		return peerResponse{Linked: true, Profile: body}, nil
 	})
 
-	peer.OnReply(func(c context.Context, from, id string, reply json.RawMessage) error {
+	peer.OnReply(func(c context.Context, _, id string, reply json.RawMessage) error {
 		var res peerResponse
 		if err := json.Unmarshal(reply, &res); err != nil {
 			return fmt.Errorf("応答を読めません: %w", err)
 		}
-		username, err := pendingUsername(c, db, id)
-		if err != nil {
-			return err
-		}
-		if username == "" {
-			// どの問い合わせの答えか分からない。**捨てる。**
-			ctx.Logger().Warn("対応する問い合わせが無い応答を捨てました", "from", from, "id", id)
-			return nil
-		}
-		return saveRemote(c, db, from, username, res)
+		return cache.Store(c, id, res.Profile, res.Linked && len(res.Profile) > 0)
 	})
+	return nil
 }
 
 // localUserIDByUsername resolves a local username to its user id.
@@ -124,65 +139,6 @@ func localUserIDByUsername(c context.Context, ctx plugin.Context, username strin
 	return user.ID, nil
 }
 
-func rememberPending(c context.Context, db *sql.DB, id, host, username string) error {
-	_, err := db.ExecContext(c, `
-		INSERT INTO remote_pending (id, host, username, created_at)
-		VALUES ($1, $2, $3, now())
-		ON CONFLICT (id) DO NOTHING
-	`, id, host, username)
-	return err
-}
-
-func pendingUsername(c context.Context, db *sql.DB, id string) (string, error) {
-	var username string
-	err := db.QueryRowContext(c, `SELECT username FROM remote_pending WHERE id = $1`, id).Scan(&username)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	// 一度使ったら消す。応答は 1 回しか来ない。
-	_, _ = db.ExecContext(c, `DELETE FROM remote_pending WHERE id = $1`, id)
-	return username, nil
-}
-
-func saveRemote(c context.Context, db *sql.DB, host, username string, res peerResponse) error {
-	ttl := remoteTTL
-	payload := res.Profile
-	if !res.Linked || len(payload) == 0 {
-		ttl = remoteNegativeTTL
-		payload = json.RawMessage(`null`)
-	}
-	_, err := db.ExecContext(c, `
-		INSERT INTO remote_snapshots (host, username, payload, fetched_at, expires_at)
-		VALUES ($1, $2, $3, now(), now() + make_interval(secs => $4))
-		ON CONFLICT (host, username) DO UPDATE SET
-			payload = EXCLUDED.payload, fetched_at = EXCLUDED.fetched_at,
-			expires_at = EXCLUDED.expires_at
-	`, host, username, []byte(payload), int(ttl.Seconds()))
-	return err
-}
-
-func remoteProfile(c context.Context, db *sql.DB, host, username string) (json.RawMessage, bool, error) {
-	var payload []byte
-	var expired bool
-	err := db.QueryRowContext(c, `
-		SELECT payload, expires_at <= now() FROM remote_snapshots
-		WHERE host = $1 AND username = $2
-	`, host, username).Scan(&payload, &expired)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, true, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if string(payload) == "null" {
-		return nil, expired, nil
-	}
-	return payload, expired, nil
-}
-
 // remoteLookup answers for a user that is not ours.
 func remoteLookup(c context.Context, ctx plugin.Context, db *sql.DB, viewerID, userID string) (any, error) {
 	host, username, err := remoteAcct(c, ctx, viewerID, userID)
@@ -191,13 +147,14 @@ func remoteLookup(c context.Context, ctx plugin.Context, db *sql.DB, viewerID, u
 		return map[string]any{"linked": false}, nil
 	}
 
-	cached, stale, err := remoteProfile(c, db, host, username)
+	cache, err := newRemoteCache(ctx, db)
 	if err != nil {
 		return nil, err
 	}
-	if stale {
-		// 期限切れでも**古いものは返す**。取り直しは裏で進む。
-		ask(c, ctx, db, host, username)
+	// 初回は空で返り、取り寄せは裏で走る。期限切れでも古いものは返る。
+	cached, err := cache.Lookup(c, host, username)
+	if err != nil {
+		return nil, err
 	}
 	if len(cached) == 0 {
 		return map[string]any{"linked": false}, nil
@@ -211,23 +168,6 @@ func remoteLookup(c context.Context, ctx plugin.Context, db *sql.DB, viewerID, u
 	// そのまま出すと CSP で表示できないうえ、閲覧者の接続先が相手に漏れる。
 	rewriteArtHosts(profile)
 	return profile, nil
-}
-
-func ask(c context.Context, ctx plugin.Context, db *sql.DB, host, username string) {
-	peer := ctx.Peer()
-	ok, err := peer.Has(c, host)
-	if err != nil || !ok {
-		// 相手が同じプラグインを持っていない。**普通のこと**なので黙って諦める。
-		return
-	}
-	id, err := peer.Send(c, host, peerRequest{Username: username})
-	if err != nil {
-		ctx.Logger().Debug("リモートへの問い合わせを出せませんでした", "host", host, "err", err)
-		return
-	}
-	if err := rememberPending(c, db, id, host, username); err != nil {
-		ctx.Logger().Warn("問い合わせの記録に失敗しました", "id", id, "err", err)
-	}
 }
 
 // remoteAcct resolves a user id to its host and username.
