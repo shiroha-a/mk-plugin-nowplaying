@@ -2,6 +2,8 @@
 
 [mk-go](https://github.com/shiroha-a/mk) のサーバープラグイン。利用者が聴いている曲をプロフィールに表示する。
 
+> **本体の 2.0 以降 (develop ではモジュールパスを変えたコミットの後) が要る。** 本体の Go のモジュールパスが `github.com/elythia-network/elythia` に変わった版に合わせてある。それより前の本体には、タグ `pre-elythia` の版を使う。
+
 取得元は [ListenBrainz](https://listenbrainz.org/) と [Last.fm](https://www.last.fm/)。
 
 ```

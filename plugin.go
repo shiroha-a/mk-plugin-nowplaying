@@ -14,8 +14,8 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/shiroha-a/mk/plugin"
-	"github.com/shiroha-a/mk/plugin/peercache"
+	"github.com/elythia-network/elythia/plugin"
+	"github.com/elythia-network/elythia/plugin/peercache"
 )
 
 // Plugin is the entry point referenced by the generated registration code.

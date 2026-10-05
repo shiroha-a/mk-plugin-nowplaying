@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shiroha-a/mk/plugin"
-	"github.com/shiroha-a/mk/plugin/plugintest"
+	"github.com/elythia-network/elythia/plugin"
+	"github.com/elythia-network/elythia/plugin/plugintest"
 )
 
 // 入れ子になった応答の中の URL もすべて貼り替えること。

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shiroha-a/mk/plugin/plugintest"
+	"github.com/elythia-network/elythia/plugin/plugintest"
 )
 
 // 同じ利用者の取り直しが何本も走らないこと。プロフィールを連打されたときに

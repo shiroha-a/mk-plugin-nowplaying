@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shiroha-a/mk/plugin"
-	"github.com/shiroha-a/mk/plugin/peercache"
+	"github.com/elythia-network/elythia/plugin"
+	"github.com/elythia-network/elythia/plugin/peercache"
 )
 
 /*
